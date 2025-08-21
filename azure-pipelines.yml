@@ -10,10 +10,16 @@ pool:
   vmImage: ubuntu-latest
 
 steps:
-- script: echo Hello, world!
-  displayName: 'Run a one-line script'
-
 - script: |
-    echo Add other tasks to build, test, and deploy your project.
-    echo See https://aka.ms/yaml
-  displayName: 'Run a multi-line script'
+    # Example: A simple build process that creates a binary or file
+    echo "Building a simple binary..."
+    echo "This is the content of the binary file" > myapp.bin
+    echo "Build complete."
+  displayName: 'Build Binaries'
+
+- task: PublishBuildArtifacts@1
+  inputs:
+    PathtoPublish: '$(System.DefaultWorkingDirectory)/myapp.bin'
+    ArtifactName: 'drop'
+    publishLocation: 'Container' # Important: Publish to the default build artifacts container
+  displayName: 'Publish Artifacts'
