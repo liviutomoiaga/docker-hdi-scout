@@ -39,4 +39,4 @@ jobs:
           artifact_name: main-bundle
           payload_extra_json: |
             {"branch_mapping":{"main":"main","v0":"v0b","v2":"v2b"}}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.GIT_TOKEN }}
