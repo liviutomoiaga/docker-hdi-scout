@@ -1,0 +1,42 @@
+name: CI (Main)
+on:
+  push:
+    branches: [ main ]
+#   pull_request:
+
+permissions:
+  contents: write
+  statuses: write
+  actions: read
+
+jobs:
+  build-main:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          echo "Build main..."
+          mkdir -p out && echo "hello" > out/thing.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: main-bundle
+          path: out/
+
+      - name: Trigger Resource (and set idle/pending status)
+        if: ${{ success() }}
+        uses: adi-innersource/shared-actions/cascade-build-reporter@268-cross-pipeline-trigger-and-results-aggregation
+        with:
+          op: trigger
+          status_context: adi/resource/build
+          status_state: pending
+          resource_owner: analogdevicesinc
+          resource_repo: resource-repo-name
+          resource_event_type: adi-resource-trigger
+          artifact_name: main-bundle
+          payload_extra_json: |
+            {"branch_mapping":{"main":"main","v0":"v0b","v2":"v2b"}}
+          github_token: ${{ secrets.GIT_TOKEN }}
