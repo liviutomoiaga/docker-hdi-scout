@@ -1,0 +1,34 @@
+name: Docker Scout Compare
+
+on:
+  workflow_dispatch:  # Manual trigger for testing
+  push:
+    branches: ["main"]
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: liviutomoiaga19390/main
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Authenticate to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USER }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Docker Scout Compare
+        uses: docker/scout-action@v1
+        with:
+          command: compare
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:python_slim
+          to: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:python_hdi
+          ignore-unchanged: true
+          only-severities: critical,high
+          github-token: ${{ secrets.GITHUB_TOKEN }}

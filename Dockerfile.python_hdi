@@ -1,0 +1,15 @@
+# Use an official HDI Python runtime as the base image
+FROM dhi.io/python:3-debian13-dev
+# Set the working directory inside the container
+WORKDIR /app
+# Copy the requirements file into the container
+COPY requirements.txt .
+# Install dependencies
+ENV SOCKET_SECURITY_DISABLE=1
+RUN pip install --no-cache-dir -r requirements.txt
+# Copy the application source code into the container
+COPY main_hdi.py main_hdi.py
+# Expose the port on which the app will run
+EXPOSE 8080
+# Define the default command to run the application
+CMD ["uvicorn", "main_hdi:app", "--host", "0.0.0.0", "--port", "8080"]

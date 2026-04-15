@@ -1,0 +1,15 @@
+services:
+  python_slim:
+    build:
+      context: .
+      dockerfile: Dockerfile.python_slim
+    image: python_slim
+    ports:
+      - "8000:8000"
+  python_hdi:
+    build:
+      context: .
+      dockerfile: Dockerfile.python_hdi
+    image: python_hdi
+    ports:
+      - "8080:8080"

@@ -1,0 +1,14 @@
+# Use an official Python runtime as the base image
+FROM python:3.10-slim
+# Set the working directory inside the container
+WORKDIR /app
+# Copy the requirements file into the container
+COPY requirements.txt .
+# Install dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+# Copy the application source code into the container
+COPY main_slim.py main_slim.py
+# Expose the port on which the app will run
+EXPOSE 8000
+# Define the default command to run the application
+CMD ["uvicorn", "main_slim:app", "--host", "0.0.0.0", "--port", "8000"]
