@@ -155,6 +155,7 @@ jobs:
           output: sbom.spdx.json
 
       - name: SBOM Statistics
+        id: sbom-stats
         run: |
           if [ -f sbom.spdx.json ]; then
             PACKAGES=$(jq '.packages | length' sbom.spdx.json 2>/dev/null || echo "N/A")
@@ -162,11 +163,14 @@ jobs:
             echo "- Total packages: ${PACKAGES}" >> $GITHUB_STEP_SUMMARY
             echo "- Format: SPDX JSON" >> $GITHUB_STEP_SUMMARY
           fi
+          # Create sanitized artifact name (replace : and / with -)
+          ARTIFACT_NAME=$(echo "${{ steps.set-image.outputs.image }}" | tr ':/' '--')
+          echo "artifact_name=sbom-${ARTIFACT_NAME}" >> $GITHUB_OUTPUT
 
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sbom-${{ steps.set-image.outputs.image  | replace(':', '-') | replace('/', '-') }}
+          name: ${{ steps.sbom-stats.outputs.artifact_name }}
           path: sbom.spdx.json
           retention-days: 30
 
