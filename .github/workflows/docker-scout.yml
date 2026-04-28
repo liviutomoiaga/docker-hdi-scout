@@ -1,4 +1,6 @@
-name: Docker Scout 
+name: Docker Scout - Compare Standard vs DHI
+
+# Builds two images (standard Python vs DHI Python) and compares security posture
 
 on:
   push:
@@ -7,77 +9,204 @@ on:
       - "main"
   pull_request:
     branches: ["**"]
+  workflow_dispatch:  # Allow manual trigger
 
 env:
-  # Hostname of your registry
   REGISTRY: docker.io
-  # Image repository, without hostname and tag
-  IMAGE_NAME: liviutomoiaga19390/main
-  SHA: ${{ github.event.pull_request.head.sha || github.event.after }}
+  IMAGE_SLIM: ${{ secrets.REGISTRY_USER }}/python-slim
+  IMAGE_DHI: ${{ secrets.REGISTRY_USER }}/python-dhi
+  SHA: ${{ github.event.pull_request.head.sha || github.event.after || github.sha }}
 
 jobs:
-  build:
+  # ============================================================================
+  # Build Standard Image (python:3.10-slim)
+  # ============================================================================
+  build-slim:
+    name: "Build Standard Image"
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       pull-requests: write
 
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
+
     steps:
-      # Authenticate to the container registry
-      - name: Authenticate to registry ${{ env.REGISTRY }}
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.REGISTRY_USER }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
-      
-      - name: Setup Docker buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      # Extract metadata (tags, labels) for Docker
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          labels: |
-            org.opencontainers.image.revision=${{ env.SHA }}
-          tags: |
-            type=edge,branch=$repo.default_branch
-            type=semver,pattern=v{{version}}
-            type=sha,prefix=,suffix=,format=short
-
-      # Build and push Docker image with Buildx
-      # (don't push on PR, load instead)
-      - name: Build and push Docker image
-        id: build-and-push
-        uses: docker/build-push-action@v7
-        with:
-          sbom: ${{ github.event_name != 'pull_request' }}
-          provenance: ${{ github.event_name != 'pull_request' }}
-          push: ${{ github.event_name != 'pull_request' }}
-          load: ${{ github.event_name == 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # You can skip this step if Docker Hub is your registry
-      # and you already authenticated before
-      - name: Authenticate to Docker
-        uses: docker/login-action@v4
+      - name: Authenticate to Docker Hub
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USER }}
           password: ${{ secrets.DOCKER_PAT }}
 
-      # Compare the image built in the pull request with the one in production
-      - name: Docker Scout
-        id: docker-scout
-        if: ${{ github.event_name == 'pull_request' }}
+      - name: Setup Docker buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_SLIM }}
+          tags: |
+            type=sha,prefix=,suffix=,format=short
+            type=raw,value=latest
+
+      - name: Build and push Standard image
+        id: build-slim
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.python_slim
+          sbom: true
+          provenance: true
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=slim
+          cache-to: type=gha,scope=slim,mode=max
+
+  # ============================================================================
+  # Build DHI Image (dhi.io/python - hardened)
+  # ============================================================================
+  build-dhi:
+    name: "Build DHI Image"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_PAT }}
+
+      - name: Setup Docker buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_DHI }}
+          tags: |
+            type=sha,prefix=,suffix=,format=short
+            type=raw,value=latest
+
+      - name: Build and push DHI image
+        id: build-dhi
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.python_hdi
+          sbom: true
+          provenance: true
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=dhi
+          cache-to: type=gha,scope=dhi,mode=max
+
+  # ============================================================================
+  # Scan Standard Image
+  # ============================================================================
+  scan-slim:
+    name: "Scan Standard Image"
+    runs-on: ubuntu-latest
+    needs: build-slim
+
+    steps:
+      - name: Authenticate to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_PAT }}
+
+      - name: Scout Quickview - Standard
+        uses: docker/scout-action@v1
+        with:
+          command: quickview
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_SLIM }}:latest
+          summary: true
+
+      - name: Scout CVEs - Standard
+        uses: docker/scout-action@v1
+        with:
+          command: cves
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_SLIM }}:latest
+          only-severities: critical,high
+          summary: true
+
+  # ============================================================================
+  # Scan DHI Image
+  # ============================================================================
+  scan-dhi:
+    name: "Scan DHI Image"
+    runs-on: ubuntu-latest
+    needs: build-dhi
+
+    steps:
+      - name: Authenticate to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_PAT }}
+
+      - name: Scout Quickview - DHI
+        uses: docker/scout-action@v1
+        with:
+          command: quickview
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_DHI }}:latest
+          summary: true
+
+      - name: Scout CVEs - DHI
+        uses: docker/scout-action@v1
+        with:
+          command: cves
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_DHI }}:latest
+          only-severities: critical,high
+          summary: true
+
+  # ============================================================================
+  # Compare: Standard vs DHI
+  # ============================================================================
+  compare:
+    name: "Compare Standard vs DHI"
+    runs-on: ubuntu-latest
+    needs: [build-slim, build-dhi]
+
+    steps:
+      - name: Authenticate to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_PAT }}
+
+      - name: Compare Standard to DHI
         uses: docker/scout-action@v1
         with:
           command: compare
-          image: ${{ steps.meta.outputs.tags }}
-          to-env: production
-          ignore-unchanged: true
-          only-severities: critical,high
-          github-token: ${{ secrets.GIT_TOKEN }}
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_SLIM }}:latest
+          to: ${{ env.REGISTRY }}/${{ env.IMAGE_DHI }}:latest
+          only-severities: critical,high,medium
+          summary: true
+
+      - name: Generate comparison summary
+        run: |
+          echo "# Security Comparison: Standard vs DHI" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | Base | Type |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|------|------|" >> $GITHUB_STEP_SUMMARY
+          echo "| \`${{ env.IMAGE_SLIM }}:latest\` | python:3.10-slim | Standard |" >> $GITHUB_STEP_SUMMARY
+          echo "| \`${{ env.IMAGE_DHI }}:latest\` | dhi.io/python:3-debian13-dev | Hardened |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "See Scout compare output above for detailed CVE differences." >> $GITHUB_STEP_SUMMARY
