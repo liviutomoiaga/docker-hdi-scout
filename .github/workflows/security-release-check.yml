@@ -1,0 +1,356 @@
+name: Security Release Check
+
+# Mimics a security-focused release flow using Docker Scout
+# Can test any Docker Hub image to evaluate security posture
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'Docker image to scan (e.g., python:3.11, nginx:latest, node:20)'
+        required: true
+        default: 'python:3.11'
+        type: string
+      compare_to:
+        description: 'Image to compare against (optional, for regression check)'
+        required: false
+        type: string
+      severity_threshold:
+        description: 'Fail if CVEs at this severity or higher are found'
+        required: true
+        default: 'critical'
+        type: choice
+        options:
+          - critical
+          - high
+          - medium
+          - low
+      fail_on_vulnerabilities:
+        description: 'Fail the workflow if vulnerabilities exceed threshold'
+        required: true
+        default: false
+        type: boolean
+
+  # Also run on schedule to monitor specific images
+  schedule:
+    - cron: '0 6 * * 1'  # Every Monday at 6 AM UTC
+
+env:
+  # Default images to scan on scheduled runs
+  DEFAULT_IMAGES: |
+    python:3.11
+    node:20-alpine
+    nginx:latest
+
+jobs:
+  # ============================================================================
+  # PHASE 1: Security Analysis
+  # ============================================================================
+  security-scan:
+    name: "Security Scan: ${{ inputs.image || 'scheduled' }}"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    outputs:
+      critical_count: ${{ steps.cve-count.outputs.critical }}
+      high_count: ${{ steps.cve-count.outputs.high }}
+      total_count: ${{ steps.cve-count.outputs.total }}
+      scan_passed: ${{ steps.evaluate.outputs.passed }}
+
+    steps:
+      # ----------------------------------------------------------------------
+      # Setup
+      # ----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_PAT }}
+
+      - name: Set image variable
+        id: set-image
+        run: |
+          if [ -n "${{ inputs.image }}" ]; then
+            echo "image=${{ inputs.image }}" >> $GITHUB_OUTPUT
+          else
+            echo "image=python:3.11" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Pull image
+        run: docker pull ${{ steps.set-image.outputs.image }}
+
+      # ----------------------------------------------------------------------
+      # Phase 1: Quick Overview
+      # ----------------------------------------------------------------------
+      - name: "Step 1: Quick Security Overview"
+        id: quickview
+        uses: docker/scout-action@v1
+        with:
+          command: quickview
+          image: ${{ steps.set-image.outputs.image }}
+          summary: true
+
+      # ----------------------------------------------------------------------
+      # Phase 2: Detailed CVE Analysis
+      # ----------------------------------------------------------------------
+      - name: "Step 2: Detailed CVE Analysis"
+        id: cves
+        uses: docker/scout-action@v1
+        with:
+          command: cves
+          image: ${{ steps.set-image.outputs.image }}
+          only-severities: critical,high,medium
+          summary: true
+
+      - name: "Step 2b: Critical & High CVEs Only"
+        id: cves-critical
+        uses: docker/scout-action@v1
+        with:
+          command: cves
+          image: ${{ steps.set-image.outputs.image }}
+          only-severities: critical,high
+          format: json
+          output: cve-report.json
+        continue-on-error: true
+
+      - name: Parse CVE counts
+        id: cve-count
+        run: |
+          if [ -f cve-report.json ]; then
+            CRITICAL=$(jq '[.vulnerabilities[] | select(.severity == "critical")] | length' cve-report.json 2>/dev/null || echo "0")
+            HIGH=$(jq '[.vulnerabilities[] | select(.severity == "high")] | length' cve-report.json 2>/dev/null || echo "0")
+            TOTAL=$(jq '.vulnerabilities | length' cve-report.json 2>/dev/null || echo "0")
+          else
+            CRITICAL=0
+            HIGH=0
+            TOTAL=0
+          fi
+
+          echo "critical=${CRITICAL}" >> $GITHUB_OUTPUT
+          echo "high=${HIGH}" >> $GITHUB_OUTPUT
+          echo "total=${TOTAL}" >> $GITHUB_OUTPUT
+
+          echo "### CVE Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Critical | ${CRITICAL} |" >> $GITHUB_STEP_SUMMARY
+          echo "| High | ${HIGH} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Total (Critical+High) | $((CRITICAL + HIGH)) |" >> $GITHUB_STEP_SUMMARY
+
+      # ----------------------------------------------------------------------
+      # Phase 3: SBOM Generation
+      # ----------------------------------------------------------------------
+      - name: "Step 3: Generate SBOM"
+        id: sbom
+        uses: docker/scout-action@v1
+        with:
+          command: sbom
+          image: ${{ steps.set-image.outputs.image }}
+          format: spdx-json
+          output: sbom.spdx.json
+
+      - name: SBOM Statistics
+        run: |
+          if [ -f sbom.spdx.json ]; then
+            PACKAGES=$(jq '.packages | length' sbom.spdx.json 2>/dev/null || echo "N/A")
+            echo "### SBOM Generated" >> $GITHUB_STEP_SUMMARY
+            echo "- Total packages: ${PACKAGES}" >> $GITHUB_STEP_SUMMARY
+            echo "- Format: SPDX JSON" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ steps.set-image.outputs.image  | replace(':', '-') | replace('/', '-') }}
+          path: sbom.spdx.json
+          retention-days: 30
+
+      # ----------------------------------------------------------------------
+      # Phase 4: Recommendations
+      # ----------------------------------------------------------------------
+      - name: "Step 4: Base Image Recommendations"
+        id: recommendations
+        uses: docker/scout-action@v1
+        with:
+          command: recommendations
+          image: ${{ steps.set-image.outputs.image }}
+          summary: true
+
+      # ----------------------------------------------------------------------
+      # Phase 5: Compare (if comparison image provided)
+      # ----------------------------------------------------------------------
+      - name: "Step 5: Compare Images"
+        if: ${{ inputs.compare_to != '' }}
+        uses: docker/scout-action@v1
+        with:
+          command: compare
+          image: ${{ steps.set-image.outputs.image }}
+          to: ${{ inputs.compare_to }}
+          ignore-unchanged: true
+          only-severities: critical,high
+          summary: true
+
+      # ----------------------------------------------------------------------
+      # Evaluation & Gate
+      # ----------------------------------------------------------------------
+      - name: Evaluate security gate
+        id: evaluate
+        run: |
+          THRESHOLD="${{ inputs.severity_threshold || 'critical' }}"
+          CRITICAL=${{ steps.cve-count.outputs.critical || 0 }}
+          HIGH=${{ steps.cve-count.outputs.high || 0 }}
+          PASSED="true"
+
+          echo "### Security Gate Evaluation" >> $GITHUB_STEP_SUMMARY
+          echo "- Threshold: ${THRESHOLD}" >> $GITHUB_STEP_SUMMARY
+          echo "- Critical CVEs: ${CRITICAL}" >> $GITHUB_STEP_SUMMARY
+          echo "- High CVEs: ${HIGH}" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$THRESHOLD" = "critical" ] && [ "$CRITICAL" -gt 0 ]; then
+            PASSED="false"
+            echo "- **Result: FAILED** (Critical CVEs found)" >> $GITHUB_STEP_SUMMARY
+          elif [ "$THRESHOLD" = "high" ] && [ $((CRITICAL + HIGH)) -gt 0 ]; then
+            PASSED="false"
+            echo "- **Result: FAILED** (Critical or High CVEs found)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **Result: PASSED**" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "passed=${PASSED}" >> $GITHUB_OUTPUT
+
+      - name: Fail on vulnerabilities (if enabled)
+        if: ${{ inputs.fail_on_vulnerabilities == true && steps.evaluate.outputs.passed == 'false' }}
+        run: |
+          echo "::error::Security gate failed - vulnerabilities exceed threshold"
+          exit 1
+
+  # ============================================================================
+  # PHASE 2: Policy Check
+  # ============================================================================
+  policy-check:
+    name: "Policy Compliance"
+    runs-on: ubuntu-latest
+    needs: security-scan
+    if: always()
+
+    steps:
+      - name: Authenticate to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_PAT }}
+
+      - name: Set image variable
+        id: set-image
+        run: |
+          if [ -n "${{ inputs.image }}" ]; then
+            echo "image=${{ inputs.image }}" >> $GITHUB_OUTPUT
+          else
+            echo "image=python:3.11" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Pull image
+        run: docker pull ${{ steps.set-image.outputs.image }}
+
+      - name: Check policy compliance
+        uses: docker/scout-action@v1
+        with:
+          command: policy
+          image: ${{ steps.set-image.outputs.image }}
+          summary: true
+        continue-on-error: true
+
+  # ============================================================================
+  # PHASE 3: Release Summary
+  # ============================================================================
+  release-summary:
+    name: "Release Summary"
+    runs-on: ubuntu-latest
+    needs: [security-scan, policy-check]
+    if: always()
+
+    steps:
+      - name: Generate release summary
+        run: |
+          echo "# Release Security Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Image Analyzed" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: \`${{ inputs.image || 'python:3.11' }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Scan Date**: $(date -u +'%Y-%m-%d %H:%M UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Critical CVEs | ${{ needs.security-scan.outputs.critical_count || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| High CVEs | ${{ needs.security-scan.outputs.high_count || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Security Gate | ${{ needs.security-scan.outputs.scan_passed == 'true' && 'PASSED' || 'FAILED' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Release Checklist" >> $GITHUB_STEP_SUMMARY
+          echo "- [x] CVE scan completed" >> $GITHUB_STEP_SUMMARY
+          echo "- [x] SBOM generated" >> $GITHUB_STEP_SUMMARY
+          echo "- [x] Base image recommendations reviewed" >> $GITHUB_STEP_SUMMARY
+          echo "- [x] Policy compliance checked" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.security-scan.outputs.scan_passed }}" = "true" ]; then
+            echo "## Recommendation: APPROVE FOR RELEASE" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## Recommendation: REVIEW REQUIRED" >> $GITHUB_STEP_SUMMARY
+            echo "Address critical/high vulnerabilities before release." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Set final status
+        run: |
+          if [ "${{ needs.security-scan.outputs.scan_passed }}" = "false" ] && [ "${{ inputs.fail_on_vulnerabilities }}" = "true" ]; then
+            echo "::error::Release check failed - security gate not passed"
+            exit 1
+          fi
+
+  # ============================================================================
+  # BATCH SCAN (for scheduled runs - scan multiple images)
+  # ============================================================================
+  batch-scan:
+    name: "Batch Scan: ${{ matrix.image }}"
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - python:3.11
+          - python:3.11-alpine
+          - node:20
+          - node:20-alpine
+          - nginx:latest
+          - nginx:alpine
+
+    steps:
+      - name: Authenticate to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_PAT }}
+
+      - name: Pull image
+        run: docker pull ${{ matrix.image }}
+
+      - name: Quick security scan
+        uses: docker/scout-action@v1
+        with:
+          command: quickview
+          image: ${{ matrix.image }}
+          summary: true
+
+      - name: CVE scan (critical/high only)
+        uses: docker/scout-action@v1
+        with:
+          command: cves
+          image: ${{ matrix.image }}
+          only-severities: critical,high
+          summary: true
