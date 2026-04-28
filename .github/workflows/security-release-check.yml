@@ -151,7 +151,7 @@ jobs:
         with:
           command: sbom
           image: ${{ steps.set-image.outputs.image }}
-          format: spdx-json
+          format: spdx
           output: sbom.spdx.json
 
       - name: SBOM Statistics
