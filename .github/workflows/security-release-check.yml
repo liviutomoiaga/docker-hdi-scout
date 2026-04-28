@@ -85,15 +85,29 @@ jobs:
         run: docker pull ${{ steps.set-image.outputs.image }}
 
       # ----------------------------------------------------------------------
-      # Phase 1: Quick Overview
+      # Phase 1: Quick Overview (may fail for scratch/DHI images)
       # ----------------------------------------------------------------------
       - name: "Step 1: Quick Security Overview"
         id: quickview
         uses: docker/scout-action@v1
+        continue-on-error: true
         with:
           command: quickview
           image: ${{ steps.set-image.outputs.image }}
           summary: true
+
+      - name: "Step 1: Quickview status"
+        if: steps.quickview.outcome == 'failure'
+        run: |
+          echo "### Quickview Warning" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The quickview command could not complete. This typically happens when:" >> $GITHUB_STEP_SUMMARY
+          echo "- The image is built FROM scratch (no base OS layer)" >> $GITHUB_STEP_SUMMARY
+          echo "- The image is a DHI/distroless image with stripped metadata" >> $GITHUB_STEP_SUMMARY
+          echo "- The base image is not in Docker Scout's database" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**CVE scanning and SBOM generation will still proceed.**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
 
       # ----------------------------------------------------------------------
       # Phase 2: Detailed CVE Analysis
@@ -175,15 +189,29 @@ jobs:
           retention-days: 30
 
       # ----------------------------------------------------------------------
-      # Phase 4: Recommendations
+      # Phase 4: Recommendations (may fail for scratch/DHI images)
       # ----------------------------------------------------------------------
       - name: "Step 4: Base Image Recommendations"
         id: recommendations
         uses: docker/scout-action@v1
+        continue-on-error: true
         with:
           command: recommendations
           image: ${{ steps.set-image.outputs.image }}
           summary: true
+
+      - name: "Step 4: Recommendations status"
+        if: steps.recommendations.outcome == 'failure'
+        run: |
+          echo "### Recommendations Warning" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Base image recommendations could not be generated. This typically happens when:" >> $GITHUB_STEP_SUMMARY
+          echo "- The image has no detectable base image (FROM scratch)" >> $GITHUB_STEP_SUMMARY
+          echo "- The image is a DHI/distroless image without base image metadata" >> $GITHUB_STEP_SUMMARY
+          echo "- The base image lineage cannot be determined" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**This is expected for hardened images. CVE and SBOM data are still valid.**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
 
       # ----------------------------------------------------------------------
       # Phase 5: Compare (if comparison image provided)
