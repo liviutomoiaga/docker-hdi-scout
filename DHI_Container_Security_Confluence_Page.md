@@ -97,6 +97,271 @@ Ensuring every component—from base image to final artifact—is verified and t
 
 ---
 
+## dhictl - Docker Hardened Images CLI
+
+`dhictl` is the official command-line tool for managing Docker Hardened Images. It allows you to browse the DHI catalog, mirror images to your registry, and create customizations.
+
+### Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **Catalog Browsing** | Explore available DHI images, filter by type/name, view metadata including CVE counts |
+| **Image Mirroring** | Mirror DHI images to your Docker Hub repository |
+| **Image Customization** | Create custom variations of DHI base images |
+| **Build Monitoring** | Track customization builds and access build logs |
+
+### Installation
+
+#### Step 1: Download the Binary
+
+Download the appropriate binary for your platform from the [releases page](https://github.com/docker-hardened-images/dhictl/releases).
+
+**Linux (amd64) - Ubuntu/Debian/WSL2:**
+```bash
+curl -L -o dhictl https://github.com/docker-hardened-images/dhictl/releases/download/v0.0.2/dhictl-linux-amd64
+chmod +x dhictl
+sudo mv dhictl /usr/local/bin/
+```
+
+**Linux (arm64):**
+```bash
+curl -L -o dhictl https://github.com/docker-hardened-images/dhictl/releases/download/v0.0.2/dhictl-linux-arm64
+chmod +x dhictl
+sudo mv dhictl /usr/local/bin/
+```
+
+**macOS (Apple Silicon):**
+```bash
+curl -L -o dhictl https://github.com/docker-hardened-images/dhictl/releases/download/v0.0.2/dhictl-darwin-arm64
+chmod +x dhictl
+sudo mv dhictl /usr/local/bin/
+```
+
+**macOS (Intel):**
+```bash
+curl -L -o dhictl https://github.com/docker-hardened-images/dhictl/releases/download/v0.0.2/dhictl-darwin-amd64
+chmod +x dhictl
+sudo mv dhictl /usr/local/bin/
+```
+
+**Windows (PowerShell):**
+```powershell
+Invoke-WebRequest -Uri "https://github.com/docker-hardened-images/dhictl/releases/download/v0.0.2/dhictl-windows-amd64.exe" -OutFile "dhictl.exe"
+Move-Item dhictl.exe C:\Windows\
+```
+
+Verify installation:
+```bash
+dhictl version
+```
+
+#### Step 2 (Optional): Enable `docker dhi` Command
+
+By default, `dhictl` is a standalone CLI tool. To use it as a Docker plugin (i.e., `docker dhi ...`), copy it to the Docker CLI plugins directory:
+
+```bash
+mkdir -p ~/.docker/cli-plugins
+cp /usr/local/bin/dhictl ~/.docker/cli-plugins/docker-dhi
+chmod +x ~/.docker/cli-plugins/docker-dhi
+```
+
+Now you can use either:
+- `dhictl <command>` (standalone)
+- `docker dhi <command>` (as Docker plugin)
+
+### Common Commands
+
+```bash
+# View available DHI images
+dhictl catalog list
+
+# Filter catalog by image name
+dhictl catalog list --name python
+
+# View image details and tags
+dhictl catalog show python
+
+# Mirror an image to your Docker Hub repository
+dhictl mirror start python:3.11
+
+# List active mirrors
+dhictl mirror list
+
+# Stop mirroring
+dhictl mirror stop <mirror-id>
+
+# Prepare a customization template
+dhictl customization prepare python:3.11
+
+# List customization builds
+dhictl customization build list
+
+# View build logs
+dhictl customization build logs <build-id>
+```
+
+### Output Formats
+
+```bash
+# JSON output for scripting/automation
+dhictl catalog list --output json
+
+# Enable shell completion (bash)
+source <(dhictl completion bash)
+```
+
+### Configuration File
+
+Store default settings in a config file to avoid repeating flags:
+
+| Platform | Config Path |
+|----------|-------------|
+| Linux/macOS | `$HOME/.config/dhictl/config.yaml` |
+| Windows | `%USERPROFILE%\.config\dhictl\config.yaml` |
+
+Example config:
+```yaml
+org: my-docker-org
+api_token: dhr_xxxxxxxxxxxx
+```
+
+Environment variables (`DHI_ORG`, `DHI_API_TOKEN`) override config file settings.
+
+---
+
+## Customize DHI Images (DHI Enterprise)
+
+DHI Enterprise allows organizations to create **customized versions** of Docker Hardened Images. This is useful when you need to add specific packages, certificates, or configurations while maintaining the security posture of the base DHI image.
+
+### Why Customize?
+
+| Use Case | Example |
+|----------|---------|
+| **Add packages** | Install additional runtime dependencies not in base image |
+| **Internal certificates** | Add corporate CA certificates for internal services |
+| **Compliance requirements** | Include specific security agents or monitoring tools |
+| **Regional configurations** | Add locale-specific packages or timezone data |
+
+### Customization Workflow
+
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   1. Prepare    │───▶│   2. Create     │───▶│   3. Build      │───▶│   4. Use        │
+│   YAML scaffold │    │   Customization │    │   (automatic)   │    │   Custom Image  │
+└─────────────────┘    └─────────────────┘    └─────────────────┘    └─────────────────┘
+```
+
+### Step 1: Prepare Customization Scaffold
+
+Generate a YAML template for your customization:
+
+```bash
+docker dhi customization prepare python 3.11 \
+  --org my-org \
+  --destination my-org/python-custom \
+  --name "Python with extras" \
+  --output python-custom.yaml
+```
+
+This creates a YAML file like:
+
+```yaml
+# python-custom.yaml
+source:
+  image: python
+  version: "3.11"
+destination:
+  repository: my-org/python-custom
+name: "Python with extras"
+packages:
+  - curl
+  - ca-certificates
+# Add custom packages, certificates, etc.
+```
+
+### Step 2: Create the Customization
+
+Submit the customization to DHI:
+
+```bash
+docker dhi customization create python-custom.yaml --org my-org
+```
+
+### Step 3: Monitor the Build
+
+DHI automatically builds your customized image. Monitor progress:
+
+```bash
+# List builds for your customization
+docker dhi customization build list my-org/python-custom "Python with extras" --org my-org
+
+# Get build details
+docker dhi customization build get my-org/python-custom "Python with extras" <build-id> --org my-org
+
+# View build logs
+docker dhi customization build logs my-org/python-custom "Python with extras" <build-id> --org my-org
+```
+
+### Step 4: Use Your Custom Image
+
+Once built, use your customized image:
+
+```dockerfile
+FROM my-org/python-custom:3.11
+WORKDIR /app
+COPY . .
+CMD ["python", "app.py"]
+```
+
+### Managing Customizations
+
+```bash
+# List all customizations
+docker dhi customization list --org my-org
+
+# Get customization details (export to YAML)
+docker dhi customization get my-org/python-custom "Python with extras" \
+  --org my-org \
+  --output python-custom.yaml
+
+# Update an existing customization (YAML must include 'id' field)
+docker dhi customization edit python-custom.yaml --org my-org
+
+# Delete a customization
+docker dhi customization delete my-org/python-custom "Python with extras" --org my-org
+```
+
+### Mirroring DHI Images (DHI Select & Enterprise)
+
+Mirror DHI images to your Docker Hub organization:
+
+```bash
+# Start mirroring an image
+docker dhi mirror start --org my-org -r python:3.11,my-org/python
+
+# Include dependent images
+docker dhi mirror start --org my-org -r python:3.11,my-org/python --dependencies
+
+# List mirrored repositories
+docker dhi mirror list --org my-org
+
+# Stop mirroring (keeps existing images)
+docker dhi mirror stop python --org my-org
+
+# Stop mirroring and delete repositories
+docker dhi mirror stop python --org my-org --delete
+```
+
+### Enterprise Package Repository
+
+Generate credentials for accessing enterprise APK packages:
+
+```bash
+docker dhi auth apk
+```
+
+---
+
 ## How to Use Docker Hardened Images
 
 ### Example: Using DHI in Dockerfile
@@ -362,34 +627,27 @@ jobs:
           image: myapp:${{ github.sha }}
 ```
 
-#### GitLab CI Example
-
-```yaml
-container_scan:
-  stage: security
-  image: docker:latest
-  services:
-    - docker:dind
-  script:
-    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA .
-    - docker scout cves $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA --only-severity critical,high --exit-code
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-```
-
 ### Policy Configuration
 
-Docker Scout policies allow you to define and enforce security standards:
+Docker Scout policies are **declarative rules** that define your organization's security standards. When you run `docker scout policy <image>`, Scout evaluates the image against these rules and reports pass/fail.
+
+```
+Image → Scout Analysis → Policy Check → Pass/Deny
+```
+
+#### Conceptual Policy Example
+
+The following YAML shows the structure and intent of Docker Scout policies:
 
 ```yaml
-# .docker/scout-policy.yaml
+# .docker/scout-policy.yaml (conceptual example)
 policies:
   - name: no-critical-cves
     description: Block images with critical CVEs
     rules:
       - type: vulnerability
         severity: critical
-        action: deny
+        action: deny          # Fails if ANY critical CVE exists
 
   - name: require-non-root
     description: Ensure images run as non-root
@@ -397,97 +655,51 @@ policies:
       - type: config
         check: user
         value: "!root"
-        action: deny
+        action: deny          # Fails if image runs as root
 
   - name: approved-base-images
     description: Only allow approved base images
     rules:
       - type: base-image
         allow:
-          - dhi.io/*
+          - dhi.io/*          # Allow any DHI image
           - gcr.io/distroless/*
+        # Fails if base image is NOT in this list
 ```
 
----
+#### How to Configure Policies
 
-## Other Image Scanning Tools
+> **Note**: The YAML example above is conceptual. Docker Scout policies are configured through:
 
-<details>
-<summary><b>Trivy</b></summary>
+| Method | Description |
+|--------|-------------|
+| **Docker Scout Dashboard** | Web UI for Docker Business/Team subscribers at https://scout.docker.com → Organization → Policies |
+| **Built-in Policies** | Predefined policies: no critical/high CVEs, supply chain attestations, up-to-date base images |
+| **CLI Evaluation** | `docker scout policy myimage:latest` to check against configured policies |
 
-Open-source scanner by Aqua Security. Fast, comprehensive, widely adopted.
+#### CLI Usage
 
 ```bash
-# Install
-brew install trivy
+# Check image against all configured policies
+docker scout policy myimage:latest
 
-# Scan image
-trivy image my-image:latest
-
-# Generate SBOM
-trivy image --format spdx-json -o sbom.json my-image:latest
-
-# Fail on critical
-trivy image --exit-code 1 --severity CRITICAL my-image:latest
+# Fail command if policy violated (useful for CI/CD)
+docker scout policy myimage:latest --exit-code
 ```
 
-**Pros**: Fast, good accuracy, active community, Kubernetes integration
-**Cons**: No built-in remediation suggestions
+#### CI/CD Integration
 
-</details>
+Add policy checking to your GitHub Actions workflow:
 
-<details>
-<summary><b>Grype</b></summary>
-
-Open-source scanner by Anchore. Pairs with Syft for SBOM generation.
-
-```bash
-# Install
-brew install grype
-
-# Scan image
-grype my-image:latest
-
-# Use with Syft SBOM
-syft my-image:latest -o json | grype
+```yaml
+- name: Docker Scout Policy Check
+  uses: docker/scout-action@v1
+  with:
+    command: policy
+    image: myapp:${{ github.sha }}
+    exit-code: true  # Fail workflow if policy violated
 ```
 
-**Pros**: Fast, good accuracy, pluggable architecture
-**Cons**: Smaller community than Trivy
-
-</details>
-
-<details>
-<summary><b>Snyk</b></summary>
-
-Commercial tool with free tier. Strong developer experience.
-
-```bash
-# Scan image
-snyk container test my-image:latest
-
-# Monitor continuously
-snyk container monitor my-image:latest
-```
-
-**Pros**: Excellent remediation guidance, IDE integrations, developer-friendly
-**Cons**: Commercial (limited free tier), requires account
-
-</details>
-
-### Tool Comparison
-
-| Feature | Docker Scout | Trivy | Grype | Snyk |
-|---------|-------------|-------|-------|------|
-| **Cost** | Free tier + paid | Free | Free | Freemium |
-| **Installation** | Built into Docker | Standalone | Standalone | Standalone |
-| **Speed** | Fast | Very fast | Fast | Moderate |
-| **SBOM** | Yes | Yes | Via Syft | Yes |
-| **Remediation** | Yes | No | No | Yes |
-| **CI/CD** | Yes | Yes | Yes | Yes |
-| **Kubernetes** | Limited | Yes | Yes | Yes |
-
----
 
 ## Best Practices
 
@@ -510,7 +722,7 @@ snyk container monitor my-image:latest
 
 ```
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│   Build     │───▶│    Scan     │───▶│   Policy    │───▶│   Deploy    │
+│   Build     │───▶│    Scan     │───▶│   Policy    │───▶│   Deploy   │
 │   Image     │    │   (Scout)   │    │   Check     │    │   (if pass) │
 └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
                           │                  │
@@ -561,9 +773,120 @@ Phase 4: Continuous monitoring & policy (maturity)
 
 ---
 
+## Example: Secure Release Flow with DHI + Scout
+
+This example demonstrates a practical release pipeline combining Docker Hardened Images and Docker Scout for a security-focused release cycle.
+
+### Pipeline Overview
+
+```
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+│  1. DEVELOP  │───▶│  2. PR GATE  │───▶│  3. BUILD    │───▶│  4. MONITOR  │
+│  DHI Base    │    │  Scout Check │    │  SBOM+Sign   │    │  Continuous  │
+└──────────────┘    └──────────────┘    └──────────────┘    └──────────────┘
+       │                   │                   │                   │
+       ▼                   ▼                   ▼                   ▼
+  Near-zero CVEs     Block if new       Signed image +      Re-scan for
+  from the start     vulnerabilities    full attestation    new CVEs
+```
+
+### Step 1: Use DHI Base Images
+
+Start with hardened base images to minimize vulnerabilities from the beginning:
+
+```dockerfile
+# Standard image: 150+ CVEs typical
+FROM python:3.11              # ❌ Not recommended
+
+# Hardened image: 0-5 CVEs typical
+FROM dhi.io/python:3.11       # ✅ Recommended
+```
+
+Mirror DHI images to a private registry:
+
+```bash
+dhictl mirror start --org my-org -r python:3.11,my-org/python
+```
+
+### Step 2: PR Security Gate
+
+Configure Scout to compare pull request images against production:
+
+```yaml
+- name: Docker Scout Compare
+  uses: docker/scout-action@v1
+  with:
+    command: compare
+    image: ${{ steps.meta.outputs.tags }}
+    to-env: production
+    only-severities: critical,high
+    exit-code: true  # Block PR if new vulnerabilities detected
+```
+
+**Result**: Pull requests introducing new critical/high CVEs are automatically blocked.
+
+### Step 3: Build with SBOM and Provenance
+
+Generate Software Bill of Materials and provenance attestation on merge:
+
+```yaml
+- name: Build and push Docker image
+  uses: docker/build-push-action@v7
+  with:
+    sbom: true          # Generate SBOM
+    provenance: true    # Sign with provenance
+    push: true
+    tags: ${{ steps.meta.outputs.tags }}
+```
+
+### Step 4: Pre-Release Policy Check
+
+Verify policy compliance before release approval:
+
+```bash
+docker scout policy myapp:v2.1.0 --exit-code
+```
+
+Example output:
+```
+✓ Policy "no-critical-cves" - PASSED
+✓ Policy "require-sbom" - PASSED
+✓ Policy "approved-base-images" - PASSED
+```
+
+### Release Checklist
+
+| Check | Command | Pass Criteria |
+|-------|---------|---------------|
+| Zero critical CVEs | `docker scout cves --only-severity critical` | Count = 0 |
+| High CVEs under limit | `docker scout cves --only-severity high` | Count ≤ 2 |
+| SBOM attached | Build with `sbom: true` | Attestation present |
+| Policy compliance | `docker scout policy --exit-code` | Exit code 0 |
+| No regression | `docker scout compare --to-env production` | No new critical/high |
+
+### Continuous Monitoring
+
+Schedule weekly re-scans of production images:
+
+```bash
+# Quick security posture check
+docker scout quickview myapp:latest
+
+# Check for base image updates
+docker scout recommendations myapp:latest
+```
+
+**Key outcomes**:
+- Security gates automated in CI/CD
+- SBOM enables rapid CVE impact assessment
+- Audit evidence generated with every build
+- New vulnerabilities detected before they reach production
+
+---
+
 ## References
 
-- [Docker Hardened Images Documentation](https://docs.docker.com/hardened-images/)
+- [Docker Hardened Images Documentation](https://docs.docker.com/dhi/)
 - [Docker Scout Documentation](https://docs.docker.com/scout/)
 - [Distroless Images](https://github.com/GoogleContainerTools/distroless)
 - [SLSA Supply Chain Framework](https://slsa.dev/)
